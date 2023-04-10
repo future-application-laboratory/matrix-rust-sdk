@@ -77,7 +77,7 @@
 //! [Application Service]: https://matrix.org/docs/spec/application_service/r0.1.2
 //! [matrix-org/matrix-rust-sdk#228]: https://github.com/matrix-org/matrix-rust-sdk/issues/228
 //! [examples directory]: https://github.com/matrix-org/matrix-rust-sdk/tree/main/crates/matrix-sdk-appservice/examples
-
+#![feature(fn_traits)]
 use std::{fmt::Debug, sync::Arc};
 
 use axum::body::HttpBody;
@@ -330,6 +330,10 @@ impl AppService {
         *self.event_handler.rooms.lock().await = Some(handler);
     }
 
+    pub async fn register_transactions(&self, handler: AppserviceFn<push_events::v1::Request, bool>) {
+        *self.event_handler.events.lock().await = Some(handler);
+    }
+
     /// Register an appservice user by sending a [`register::v3::Request`] to
     /// the homeserver.
     ///
@@ -438,80 +442,87 @@ impl AppService {
                 .await?;
         }
 
-        /// Helper type for extracting the room id for an event
-        #[derive(Debug, Deserialize)]
-        struct EventRoomId {
-            room_id: Option<OwnedRoomId>,
+        ///// Helper type for extracting the room id for an event
+        //#[derive(Debug, Deserialize)]
+        //struct EventRoomId {
+        //    room_id: Option<OwnedRoomId>,
+        //}
+
+        // // Spawn a task for each client that constructs and pushes a sync event
+        // let mut tasks: Vec<JoinHandle<_>> = Vec::new();
+        // let transaction = Arc::new(transaction);
+        // for user_client in self.clients.iter() {
+        //     let client = sender_localpart_client.clone();
+        //     let user_client = user_client.clone();
+        //     let transaction = transaction.clone();
+        //     let sender_localpart = self.registration.sender_localpart.clone();
+
+        //     let task = tokio::spawn(async move {
+        //         let Some(user_id) = user_client.user_id() else {
+        //             // The client is not logged in, skipping
+        //             return Ok(());
+        //         };
+        //         let user_localpart = user_id.localpart();
+        //         let mut response =
+        // sync_events::v3::Response::new(transaction.txn_id.to_string());
+
+        //         // Clients expect events to be grouped per room, where the
+        //         // group also denotes what the client's membership of the given
+        //         // room is. We take all the events in the transaction and sort
+        //         // them into appropriate groups.
+        //         //
+        //         // We special-case the `sender_localpart` user which receives all
+        // events and         // by falling back to a membership of "join" if
+        // it's unknown.         for raw_event in &transaction.events {
+        //             let Some(room_id) =
+        // raw_event.deserialize_as::<EventRoomId>()?.room_id else {
+        // warn!("Transaction contained event with no ID");
+        // continue;             };
+        //             let key = &[USER_MEMBER, room_id.as_bytes(), b".",
+        // user_localpart.as_bytes()]                 .concat();
+        //             let membership = match
+        // client.store().get_custom_value(key).await? {
+        // Some(value) => String::from_utf8(value).ok().map(MembershipState::from),
+        //                 // Assume the `sender_localpart` user is in every known room
+        //                 None if user_localpart == sender_localpart =>
+        // Some(MembershipState::Join),                 None => None,
+        //             };
+
+        //             match membership {
+        //                 Some(MembershipState::Join) => {
+        //                     let room =
+        // response.rooms.join.entry(room_id).or_default();
+        // room.timeline.events.push(raw_event.clone().cast())                 }
+        //                 Some(MembershipState::Leave | MembershipState::Ban) => {
+        //                     let room =
+        // response.rooms.leave.entry(room_id).or_default();
+        // room.timeline.events.push(raw_event.clone().cast())                 }
+        //                 Some(MembershipState::Knock) => {
+        //                     response.rooms.knock.entry(room_id).or_default();
+        //                 }
+        //                 Some(MembershipState::Invite) => {
+        //                     response.rooms.invite.entry(room_id).or_default();
+        //                 }
+        //                 Some(unknown) => debug!("Unknown membership type:
+        // {unknown}"),                 None => debug!("Assuming
+        // {user_localpart} is not in {room_id}"),             }
+        //         }
+        //         user_client.receive_transaction(&transaction.txn_id,
+        // response).await?;         Ok::<_, Error>(())
+        //     });
+
+        //     tasks.push(task);
+        // }
+        let mut events_handler = self.event_handler.events.lock().await;
+        let events_handler = events_handler.as_mut();
+        if let Some(events_handler) = events_handler {
+            events_handler.call_once((self.clone(), transaction));
         }
-
-        // Spawn a task for each client that constructs and pushes a sync event
-        let mut tasks: Vec<JoinHandle<_>> = Vec::new();
-        let transaction = Arc::new(transaction);
-        for user_client in self.clients.iter() {
-            let client = sender_localpart_client.clone();
-            let user_client = user_client.clone();
-            let transaction = transaction.clone();
-            let sender_localpart = self.registration.sender_localpart.clone();
-
-            let task = tokio::spawn(async move {
-                let Some(user_id) = user_client.user_id() else {
-                    // The client is not logged in, skipping
-                    return Ok(());
-                };
-                let user_localpart = user_id.localpart();
-                let mut response = sync_events::v3::Response::new(transaction.txn_id.to_string());
-
-                // Clients expect events to be grouped per room, where the
-                // group also denotes what the client's membership of the given
-                // room is. We take all the events in the transaction and sort
-                // them into appropriate groups.
-                //
-                // We special-case the `sender_localpart` user which receives all events and
-                // by falling back to a membership of "join" if it's unknown.
-                for raw_event in &transaction.events {
-                    let Some(room_id) = raw_event.deserialize_as::<EventRoomId>()?.room_id else {
-                        warn!("Transaction contained event with no ID");
-                        continue;
-                    };
-                    let key = &[USER_MEMBER, room_id.as_bytes(), b".", user_localpart.as_bytes()]
-                        .concat();
-                    let membership = match client.store().get_custom_value(key).await? {
-                        Some(value) => String::from_utf8(value).ok().map(MembershipState::from),
-                        // Assume the `sender_localpart` user is in every known room
-                        None if user_localpart == sender_localpart => Some(MembershipState::Join),
-                        None => None,
-                    };
-
-                    match membership {
-                        Some(MembershipState::Join) => {
-                            let room = response.rooms.join.entry(room_id).or_default();
-                            room.timeline.events.push(raw_event.clone().cast())
-                        }
-                        Some(MembershipState::Leave | MembershipState::Ban) => {
-                            let room = response.rooms.leave.entry(room_id).or_default();
-                            room.timeline.events.push(raw_event.clone().cast())
-                        }
-                        Some(MembershipState::Knock) => {
-                            response.rooms.knock.entry(room_id).or_default();
-                        }
-                        Some(MembershipState::Invite) => {
-                            response.rooms.invite.entry(room_id).or_default();
-                        }
-                        Some(unknown) => debug!("Unknown membership type: {unknown}"),
-                        None => debug!("Assuming {user_localpart} is not in {room_id}"),
-                    }
-                }
-                user_client.receive_transaction(&transaction.txn_id, response).await?;
-                Ok::<_, Error>(())
-            });
-
-            tasks.push(task);
-        }
-        for task in tasks {
-            if let Err(e) = task.await {
-                warn!("Joining sync task failed: {e}");
-            }
-        }
+        //for task in tasks {
+        //    if let Err(e) = task.await {
+        //        warn!("Joining sync task failed: {e}");
+        //    }
+        //}
         Ok(())
     }
 

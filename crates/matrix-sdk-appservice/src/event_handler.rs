@@ -14,11 +14,13 @@
 
 use std::{future::Future, pin::Pin, sync::Arc};
 
+use ruma::{events::AnyTimelineEvent, serde::Raw};
 use tokio::sync::Mutex;
 
 use crate::{
-    ruma::api::appservice::query::{
-        query_room_alias::v1 as query_room, query_user_id::v1 as query_user,
+    ruma::api::appservice::{
+        event::push_events::v1::Request as event,
+        query::{query_room_alias::v1 as query_room, query_user_id::v1 as query_user},
     },
     AppService,
 };
@@ -31,6 +33,7 @@ pub(crate) type AppserviceFn<A, R> =
 pub struct EventHandler {
     pub users: Arc<Mutex<Option<AppserviceFn<query_user::Request, bool>>>>,
     pub rooms: Arc<Mutex<Option<AppserviceFn<query_room::Request, bool>>>>,
+    pub events: Arc<Mutex<Option<AppserviceFn<event, bool>>>>,
 }
 
 impl std::fmt::Debug for EventHandler {
